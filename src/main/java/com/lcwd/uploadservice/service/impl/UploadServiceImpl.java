@@ -149,7 +149,32 @@ public class UploadServiceImpl implements UploadService {
 
     @Override
     public CompleteUploadResponse completeUpload(UUID sessionId) {
-        return null;
+        UploadSession session = repository
+                .findById(sessionId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Session with id " + sessionId + " doesn't exist")
+                );
+
+        if (session.getStatus() == UploadStatus.COMPLETED) {
+            throw new IllegalStateException("Already Uploaded File " + session.getStatus());
+        }
+        if(session.getStatus() == UploadStatus.ABORTED){
+            throw new IllegalStateException("File Aborted " + session.getStatus());
+        }
+
+        // Check if all the parts are uploaded or not
+        List<PartSummary> uploadedParts = storageService.listParts(session.getObjectKey(), session.getS3UploadId());
+        if(uploadedParts.size() != session.getTotalParts()){
+            throw new ResourceNotFoundException("All Parts are not uploaded");
+        }
+
+        storageService.completeMultipartUpload(session.getObjectKey(), session.getS3UploadId(), uploadedParts);
+        // Save the session
+        session.setUpdatedAt(Instant.now());
+        session.setStatus(UploadStatus.COMPLETED);
+        repository.save(session);
+
+        return new CompleteUploadResponse(sessionId, session.getObjectKey(), UploadStatus.COMPLETED);
     }
 
     @Override

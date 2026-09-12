@@ -1,10 +1,6 @@
 package com.lcwd.uploadservice.controller;
 
-import com.lcwd.uploadservice.dto.InitiateUploadRequest;
-import com.lcwd.uploadservice.dto.InitiateUploadResponse;
-import com.lcwd.uploadservice.dto.PresignPartsRequest;
-import com.lcwd.uploadservice.dto.PresignedPartResponse;
-import com.lcwd.uploadservice.dto.UploadStatusResponse;
+import com.lcwd.uploadservice.dto.*;
 import com.lcwd.uploadservice.service.UploadService;
 import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
@@ -41,6 +37,13 @@ public class UploadController {
     ) {
         UUID id = UUID.fromString(sessionId);
         List<PresignedPartResponse> response = uploadService.presignParts(id, request.partNumbers());
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("{sessionId}/complete")
+    public ResponseEntity<CompleteUploadResponse> completeUploadResponse(@PathVariable String sessionId) {
+        UUID id = UUID.fromString(sessionId);
+        CompleteUploadResponse response = uploadService.completeUpload(id);
         return ResponseEntity.ok(response);
     }
 

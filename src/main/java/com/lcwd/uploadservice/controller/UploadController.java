@@ -2,14 +2,14 @@ package com.lcwd.uploadservice.controller;
 
 import com.lcwd.uploadservice.dto.InitiateUploadRequest;
 import com.lcwd.uploadservice.dto.InitiateUploadResponse;
+import com.lcwd.uploadservice.dto.UploadStatusResponse;
 import com.lcwd.uploadservice.service.UploadService;
 import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/uploads")
@@ -21,6 +21,13 @@ public class UploadController {
     @PostMapping
     public ResponseEntity<InitiateUploadResponse> initiateUpload(@Valid @RequestBody InitiateUploadRequest request) {
         InitiateUploadResponse response = uploadService.initiateUpload(request);
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/{sessionId}")
+    public  ResponseEntity<UploadStatusResponse> getStatus(@PathVariable String sessionId) {
+        UUID id = UUID.fromString(sessionId);
+        UploadStatusResponse response= uploadService.getStatus(id);
         return ResponseEntity.ok(response);
     }
 }

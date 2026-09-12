@@ -4,6 +4,7 @@ import com.lcwd.uploadservice.dto.*;
 import com.lcwd.uploadservice.entity.PartSummary;
 import com.lcwd.uploadservice.entity.UploadSession;
 import com.lcwd.uploadservice.entity.UploadStatus;
+import com.lcwd.uploadservice.exceptions.ResourceNotFoundException;
 import com.lcwd.uploadservice.repository.UploadSessionRepository;
 import com.lcwd.uploadservice.service.StorageService;
 import com.lcwd.uploadservice.service.UploadService;
@@ -65,7 +66,7 @@ public class UploadServiceImpl implements UploadService {
                 .updatedAt(Instant.now())
                 .build();
 
-        String objectKey = bucketName + "/" + session.getId() + "/" + request.fileName();
+        String objectKey = session.getId() + "/" + request.fileName();
         String s3UploadId = storageService.createMultipartUpload(objectKey, request.contentType());
 
         session.setObjectKey(objectKey);
@@ -84,7 +85,28 @@ public class UploadServiceImpl implements UploadService {
 
     @Override
     public UploadStatusResponse getStatus(UUID sessionId) {
-        return null;
+        Optional<UploadSession> existing = repository.findById(sessionId);
+        if(existing.isPresent()){
+            UploadSession session = existing.get();
+            List<Integer> uploadedParts = storageService
+                    .listParts(session.getObjectKey(), session.getS3UploadId())
+                    .stream()
+                    .map(PartSummary::partNumber)
+                    .toList();
+            long bytesUploaded = Math.min(uploadedParts.size() * session.getChunkSize(), session.getFileSize());
+            return new UploadStatusResponse(
+                    session.getId(),
+                    session.getFileName(),
+                    session.getFileSize(),
+                    session.getChunkSize(),
+                    session.getTotalParts(),
+                    session.getStatus(),
+                    uploadedParts,
+                    bytesUploaded
+            );
+        }
+
+        throw new ResourceNotFoundException("Session with id " + sessionId + " doesn't exist");
     }
 
     @Override

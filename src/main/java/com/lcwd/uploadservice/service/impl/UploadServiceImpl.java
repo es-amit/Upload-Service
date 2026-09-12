@@ -9,13 +9,16 @@ import com.lcwd.uploadservice.repository.UploadSessionRepository;
 import com.lcwd.uploadservice.service.StorageService;
 import com.lcwd.uploadservice.service.UploadService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class UploadServiceImpl implements UploadService {
@@ -24,6 +27,9 @@ public class UploadServiceImpl implements UploadService {
 
     @Value("${minio.presign-expiry-minutes:15}")
     private long presignExpiryMinutes;
+
+    @Value("${minio.stale-after-hours:24}")
+    private long staleAfterHours;
 
 
     private final UploadSessionRepository repository;
@@ -179,12 +185,53 @@ public class UploadServiceImpl implements UploadService {
 
     @Override
     public void abortUpload(UUID sessionId) {
+        UploadSession session = repository
+                .findById(sessionId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Session with id " + sessionId + " doesn't exist")
+                );
+        if (session.getStatus() == UploadStatus.COMPLETED) {
+            throw new IllegalStateException("Already Uploaded File " + session.getStatus());
+        }
+
+        if(session.getStatus() == UploadStatus.ABORTED){
+            throw new IllegalStateException("File Aborted Already " + session.getStatus());
+        }
+
+        storageService.abortMultipartUpload(session.getObjectKey(), session.getS3UploadId());
+
+        // Save the session
+        session.setUpdatedAt(Instant.now());
+        session.setStatus(UploadStatus.ABORTED);
+        repository.save(session);
 
     }
 
     @Override
+//    @Scheduled(cron = "0 0 */6 * * *")
+    @Scheduled(cron = "0 * * * * *")
     public void cleanupStaleUploads() {
+        // Only INITIATED/UPLOADING sessions can go stale — COMPLETED/ABORTED are already terminal.
+        List<UploadStatus> statuses = List.of(UploadStatus.INITIATED, UploadStatus.UPLOADING);
+        Instant cutoff = Instant.now().minus(Duration.ofHours(staleAfterHours));
 
+        List<UploadSession> staleSessions = repository.findByStatusInAndUpdatedAtBefore(statuses, cutoff);
+        log.info("Running cron ");
+        if (staleSessions.isEmpty()) {
+            return;
+        }
+
+        log.info("Found {} stale upload session(s) untouched since before {} — aborting.", staleSessions.size(), cutoff);
+
+        for (UploadSession session : staleSessions) {
+            try {
+                abortUpload(session.getId());
+                log.info("Aborted stale session {}", session.getId());
+            } catch (Exception e) {
+                // Don't let one bad session stop the rest of the cleanup run.
+                log.warn("Failed to abort stale session {}: {}", session.getId(), e.getMessage());
+            }
+        }
     }
 
     private int calculateTotalParts(long fileSize) {

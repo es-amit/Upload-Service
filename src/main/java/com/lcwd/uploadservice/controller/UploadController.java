@@ -47,4 +47,11 @@ public class UploadController {
         return ResponseEntity.ok(response);
     }
 
+    @DeleteMapping("/{sessionId}")
+    public ResponseEntity<Void> abortUpload(@PathVariable String sessionId) {
+        UUID id = UUID.fromString(sessionId);
+        uploadService.abortUpload(id);
+        return ResponseEntity.noContent().build();
+    }
+
 }

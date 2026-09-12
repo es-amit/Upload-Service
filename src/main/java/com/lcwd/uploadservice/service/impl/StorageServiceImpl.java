@@ -29,24 +29,46 @@ public class StorageServiceImpl implements StorageService {
 
     @Override
     public String createMultipartUpload(String objectKey, String contentType) {
-        CreateMultipartUploadResponse response = s3Client.createMultipartUpload(CreateMultipartUploadRequest.builder().bucket(bucketName).key(objectKey).contentType(contentType).build());
+        CreateMultipartUploadResponse response = s3Client.createMultipartUpload(
+                CreateMultipartUploadRequest.builder()
+                        .bucket(bucketName)
+                        .key(objectKey)
+                        .contentType(contentType)
+                        .build());
         return response.uploadId();
     }
 
     @Override
     public URL presignUploadPart(String objectKey, String s3UploadId, int partNumber, Duration expiry) {
-        UploadPartRequest uploadPartRequest = UploadPartRequest.builder().partNumber(partNumber).key(objectKey).uploadId(s3UploadId).bucket(bucketName).build();
+        UploadPartRequest uploadPartRequest = UploadPartRequest.builder()
+                .partNumber(partNumber)
+                .key(objectKey)
+                .uploadId(s3UploadId)
+                .bucket(bucketName)
+                .build();
 
-        UploadPartPresignRequest presignRequest = UploadPartPresignRequest.builder().uploadPartRequest(uploadPartRequest).signatureDuration(expiry).build();
+        UploadPartPresignRequest presignRequest = UploadPartPresignRequest.builder()
+                .uploadPartRequest(uploadPartRequest)
+                .signatureDuration(expiry)
+                .build();
 
         return s3Presigner.presignUploadPart(presignRequest).url();
     }
 
     @Override
     public List<PartSummary> listParts(String objectKey, String s3UploadId) {
-        ListPartsResponse listPartsResponse = s3Client.listParts(ListPartsRequest.builder().bucket(bucketName).key(objectKey).uploadId(s3UploadId).build());
+        ListPartsResponse listPartsResponse = s3Client.listParts(
+                ListPartsRequest.builder()
+                        .bucket(bucketName)
+                        .key(objectKey)
+                        .uploadId(s3UploadId)
+                        .build());
 
-        return listPartsResponse.parts().stream().map((e) -> new PartSummary(e.partNumber(), e.eTag(), e.size())).toList();
+        return listPartsResponse.parts()
+                .stream()
+                .map((e) ->
+                        new PartSummary(e.partNumber(), e.eTag(), e.size()))
+                .toList();
     }
 
     @Override
@@ -72,6 +94,11 @@ public class StorageServiceImpl implements StorageService {
 
     @Override
     public void abortMultipartUpload(String objectKey, String s3UploadId) {
-
+        s3Client.abortMultipartUpload(
+                AbortMultipartUploadRequest.builder()
+                        .bucket(bucketName)
+                        .key(objectKey)
+                        .uploadId(s3UploadId)
+                        .build());
     }
 }

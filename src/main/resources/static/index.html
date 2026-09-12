@@ -103,6 +103,7 @@ let uploadedParts = new Set();
 let paused = false;
 let cancelled = false;
 let inFlightBytes = {};  // partNumber -> bytes currently sent (for progress while in-flight)
+let activeXhrs = new Set(); // in-flight XMLHttpRequests, so Cancel can actually stop them
 let lastSpeedSample = { t: Date.now(), bytes: 0 };
 
 const el = id => document.getElementById(id);
@@ -218,6 +219,7 @@ async function presignParts(sessionId, partNumbers) {
 function uploadChunkXhr(url, chunkBlob, partNumber) {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
+        activeXhrs.add(xhr);
         xhr.open('PUT', url);
         xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
@@ -226,6 +228,7 @@ function uploadChunkXhr(url, chunkBlob, partNumber) {
             }
         };
         xhr.onload = () => {
+            activeXhrs.delete(xhr);
             delete inFlightBytes[partNumber];
             if (xhr.status >= 200 && xhr.status < 300) {
                 resolve();
@@ -234,20 +237,33 @@ function uploadChunkXhr(url, chunkBlob, partNumber) {
             }
         };
         xhr.onerror = () => {
+            activeXhrs.delete(xhr);
             delete inFlightBytes[partNumber];
             reject(new Error(`part ${partNumber} network error`));
+        };
+        xhr.onabort = () => {
+            activeXhrs.delete(xhr);
+            delete inFlightBytes[partNumber];
+            reject(new Error(`part ${partNumber} aborted`));
         };
         xhr.send(chunkBlob);
     });
 }
 
-async function uploadPartWithRetry(sessionId, partNumber) {
+// initialUrl comes from a batched presign call (one request covering several parts at once).
+// If a retry is needed, we re-presign just this one part individually — a retry means time has
+// passed and/or the earlier link may be stale, so it isn't worth re-batching for it.
+async function uploadPartWithRetry(sessionId, partNumber, initialUrl) {
+    let url = initialUrl;
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         if (cancelled) return;
         while (paused) await sleep(500);
 
         try {
-            const [{ url }] = await presignParts(sessionId, [partNumber]);
+            if (!url) {
+                [{ url }] = await presignParts(sessionId, [partNumber]);
+            }
             const start = (partNumber - 1) * session.chunkSize;
             const end = Math.min(start + session.chunkSize, file.size);
             const chunk = file.slice(start, end);
@@ -259,6 +275,7 @@ async function uploadPartWithRetry(sessionId, partNumber) {
             return;
         } catch (err) {
             log(`Part ${partNumber} attempt ${attempt} failed: ${err.message}`);
+            url = null; // force a fresh link on the next attempt
             if (attempt === MAX_RETRIES) throw err;
             await sleep(1000 * attempt); // simple backoff
         }
@@ -277,17 +294,31 @@ async function runUploadQueue(sessionId) {
         return;
     }
 
-    let index = 0;
-    async function worker() {
-        while (index < pending.length) {
-            if (cancelled) return;
-            const partNumber = pending[index++];
-            await uploadPartWithRetry(sessionId, partNumber);
-        }
+    const failedParts = [];
+
+    // Presign a whole batch of CONCURRENCY parts in ONE request, then upload all of them
+    // in parallel — instead of each worker calling presign individually per part.
+    for (let i = 0; i < pending.length; i += CONCURRENCY) {
+        if (cancelled) return;
+        while (paused) await sleep(500);
+
+        const batch = pending.slice(i, i + CONCURRENCY);
+        log(`Presigning batch: parts ${batch.join(', ')}`);
+        const presigned = await presignParts(sessionId, batch);
+        const urlByPart = new Map(presigned.map(p => [p.partNumber, p.url]));
+
+        const results = await Promise.allSettled(
+            batch.map(partNumber => uploadPartWithRetry(sessionId, partNumber, urlByPart.get(partNumber)))
+        );
+
+        results.forEach((result, idx) => {
+            if (result.status === 'rejected') failedParts.push(batch[idx]);
+        });
     }
 
-    const workers = Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker);
-    await Promise.all(workers);
+    if (failedParts.length > 0) {
+        throw new Error(`Failed to upload parts: ${failedParts.join(', ')} (after ${MAX_RETRIES} retries each)`);
+    }
 }
 
 async function completeUpload(sessionId) {
@@ -359,12 +390,33 @@ pauseBtn.addEventListener('click', () => {
     log(paused ? 'Paused by user.' : 'Resumed by user.');
 });
 
-cancelBtn.addEventListener('click', () => {
+cancelBtn.addEventListener('click', async () => {
     cancelled = true;
     paused = false;
     pauseBtn.disabled = true;
     cancelBtn.disabled = true;
-    log('Cancelled by user (session left as-is on the server; abort endpoint not implemented yet).');
+
+    // Stop any chunk PUTs already in flight — without this, uploads already
+    // sent to MinIO would keep running to completion even after Cancel.
+    activeXhrs.forEach(xhr => xhr.abort());
+    activeXhrs.clear();
+    inFlightBytes = {};
+    updateProgress();
+
+    if (session) {
+        try {
+            const res = await fetch(`${API}/${session.sessionId}`, { method: 'DELETE' });
+            if (res.ok) {
+                log('Cancelled — multipart upload aborted on the server.');
+            } else {
+                log(`Cancelled locally, but server abort failed: ${res.status} ${await res.text()}`);
+            }
+        } catch (err) {
+            log(`Cancelled locally, but server abort request errored: ${err.message}`);
+        }
+    } else {
+        log('Cancelled by user.');
+    }
 });
 </script>
 </body>

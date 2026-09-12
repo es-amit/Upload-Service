@@ -2,6 +2,8 @@ package com.lcwd.uploadservice.controller;
 
 import com.lcwd.uploadservice.dto.InitiateUploadRequest;
 import com.lcwd.uploadservice.dto.InitiateUploadResponse;
+import com.lcwd.uploadservice.dto.PresignPartsRequest;
+import com.lcwd.uploadservice.dto.PresignedPartResponse;
 import com.lcwd.uploadservice.dto.UploadStatusResponse;
 import com.lcwd.uploadservice.service.UploadService;
 import jakarta.validation.Valid;
@@ -9,6 +11,7 @@ import lombok.AllArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -30,4 +33,15 @@ public class UploadController {
         UploadStatusResponse response= uploadService.getStatus(id);
         return ResponseEntity.ok(response);
     }
+
+    @PostMapping("/{sessionId}/parts/presign")
+    public ResponseEntity<List<PresignedPartResponse>> presignParts(
+            @PathVariable String sessionId,
+            @Valid @RequestBody PresignPartsRequest request
+    ) {
+        UUID id = UUID.fromString(sessionId);
+        List<PresignedPartResponse> response = uploadService.presignParts(id, request.partNumbers());
+        return ResponseEntity.ok(response);
+    }
+
 }

@@ -12,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 
@@ -21,8 +22,9 @@ public class UploadServiceImpl implements UploadService {
     @Value("${minio.chunk-size}")
     private long chunkSize;
 
-    @Value("${minio.bucket}")
-    private String bucketName;
+    @Value("${minio.presign-expiry-minutes:15}")
+    private long presignExpiryMinutes;
+
 
     private final UploadSessionRepository repository;
     private final StorageService storageService;
@@ -111,7 +113,38 @@ public class UploadServiceImpl implements UploadService {
 
     @Override
     public List<PresignedPartResponse> presignParts(UUID sessionId, List<Integer> partNumbers) {
-        return List.of();
+        UploadSession session = repository.findById(sessionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Session with id " + sessionId + " doesn't exist"));
+
+        if (session.getStatus() == UploadStatus.COMPLETED || session.getStatus() == UploadStatus.ABORTED) {
+            throw new IllegalStateException("Cannot presign parts for a session in status " + session.getStatus());
+        }
+
+        for (Integer partNumber : partNumbers) {
+            if (partNumber < 1 || partNumber > session.getTotalParts()) {
+                throw new IllegalArgumentException(
+                        "Invalid part number " + partNumber + " — must be between 1 and " + session.getTotalParts());
+            }
+        }
+
+        Duration expiry = Duration.ofMinutes(presignExpiryMinutes);
+        Instant expiresAt = Instant.now().plus(expiry);
+
+        List<PresignedPartResponse> responses = partNumbers.stream()
+                .map(partNumber -> new PresignedPartResponse(
+                        partNumber,
+                        storageService.presignUploadPart(session.getObjectKey(), session.getS3UploadId(), partNumber, expiry).toString(),
+                        expiresAt
+                ))
+                .toList();
+
+        if (session.getStatus() == UploadStatus.INITIATED) {
+            session.setStatus(UploadStatus.UPLOADING);
+            session.setUpdatedAt(Instant.now());
+            repository.save(session);
+        }
+
+        return responses;
     }
 
     @Override

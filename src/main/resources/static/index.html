@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Chunked Video Upload — Test Client</title>
+<style>
+    body {
+        font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+        max-width: 720px;
+        margin: 40px auto;
+        padding: 0 16px;
+        color: #1a1a1a;
+    }
+    h1 { font-size: 20px; }
+    .card {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 16px;
+    }
+    input[type=file] { margin-bottom: 12px; }
+    button {
+        padding: 8px 16px;
+        margin-right: 8px;
+        border: 1px solid #333;
+        background: #fff;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { background: #1a1a1a; color: #fff; }
+    .bar-track {
+        background: #eee;
+        border-radius: 6px;
+        height: 18px;
+        overflow: hidden;
+        margin: 12px 0 6px;
+    }
+    .bar-fill {
+        background: #2e7d32;
+        height: 100%;
+        width: 0%;
+        transition: width 0.2s ease;
+    }
+    .meta { font-size: 13px; color: #555; display: flex; justify-content: space-between; }
+    .status-pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 12px;
+        background: #eee;
+    }
+    .status-pill.online { background: #c8e6c9; }
+    .status-pill.offline { background: #ffcdd2; }
+    #log {
+        font-family: Consolas, monospace;
+        font-size: 12px;
+        background: #111;
+        color: #b6f7b6;
+        padding: 12px;
+        height: 220px;
+        overflow-y: auto;
+        border-radius: 6px;
+        white-space: pre-wrap;
+    }
+</style>
+</head>
+<body>
+
+<h1>Chunked Video Upload — Test Client</h1>
+
+<div class="card">
+    <div>
+        Network: <span id="netStatus" class="status-pill online">online</span>
+    </div>
+    <br>
+    <input type="file" id="fileInput" accept="video/*">
+    <br>
+    <button id="startBtn" class="primary">Start / Resume Upload</button>
+    <button id="pauseBtn" disabled>Pause</button>
+    <button id="cancelBtn" disabled>Cancel</button>
+
+    <div class="bar-track"><div class="bar-fill" id="barFill"></div></div>
+    <div class="meta">
+        <span id="pct">0%</span>
+        <span id="bytes">0 MB / 0 MB</span>
+        <span id="speed"></span>
+    </div>
+</div>
+
+<div class="card">
+    <div id="log">Pick a video file and click "Start / Resume Upload".</div>
+</div>
+
+<script>
+const API = '/api/uploads';
+const CONCURRENCY = 3;
+const MAX_RETRIES = 3;
+
+let file = null;
+let session = null;      // { sessionId, chunkSize, totalParts }
+let uploadedParts = new Set();
+let paused = false;
+let cancelled = false;
+let inFlightBytes = {};  // partNumber -> bytes currently sent (for progress while in-flight)
+let lastSpeedSample = { t: Date.now(), bytes: 0 };
+
+const el = id => document.getElementById(id);
+const fileInput = el('fileInput');
+const startBtn = el('startBtn');
+const pauseBtn = el('pauseBtn');
+const cancelBtn = el('cancelBtn');
+const logBox = el('log');
+
+function log(msg) {
+    const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    logBox.textContent += '\n' + line;
+    logBox.scrollTop = logBox.scrollHeight;
+    console.log(line);
+}
+
+function fingerprintOf(f) {
+    return `${f.name}-${f.size}-${f.lastModified}`;
+}
+
+async function fingerprintOfSHA(f) {
+    // Simple, fast, good-enough fingerprint (no need to hash file contents for this test client)
+    return fingerprintOf(f);
+}
+
+function fmtMB(bytes) {
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function updateProgress() {
+    if (!session || !file) return;
+    const doneBytes = Math.min(uploadedParts.size * session.chunkSize, file.size);
+    let inFlight = 0;
+    for (const b of Object.values(inFlightBytes)) inFlight += b;
+    const totalSent = Math.min(doneBytes + inFlight, file.size);
+    const pct = file.size === 0 ? 0 : Math.floor((totalSent / file.size) * 100);
+
+    el('barFill').style.width = pct + '%';
+    el('pct').textContent = pct + '%';
+    el('bytes').textContent = `${fmtMB(totalSent)} / ${fmtMB(file.size)}`;
+
+    const now = Date.now();
+    const dt = (now - lastSpeedSample.t) / 1000;
+    if (dt >= 1) {
+        const speedBps = (totalSent - lastSpeedSample.bytes) / dt;
+        el('speed').textContent = speedBps > 0 ? (speedBps / (1024 * 1024)).toFixed(2) + ' MB/s' : '';
+        lastSpeedSample = { t: now, bytes: totalSent };
+    }
+}
+
+function setNetIndicator() {
+    const pill = el('netStatus');
+    if (navigator.onLine) {
+        pill.textContent = 'online';
+        pill.className = 'status-pill online';
+    } else {
+        pill.textContent = 'offline';
+        pill.className = 'status-pill offline';
+    }
+}
+
+window.addEventListener('online', () => {
+    setNetIndicator();
+    log('Back online — resuming upload.');
+    if (session && !cancelled) {
+        paused = false;
+        refreshStatusAndContinue();
+    }
+});
+
+window.addEventListener('offline', () => {
+    setNetIndicator();
+    log('Connection lost — pausing. Will resume automatically when back online.');
+    paused = true;
+});
+
+setNetIndicator();
+
+async function initiateUpload() {
+    const fingerprint = await fingerprintOfSHA(file);
+    const res = await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            fileName: file.name,
+            contentType: file.type || 'video/mp4',
+            fileSize: file.size,
+            fingerprint
+        })
+    });
+    if (!res.ok) throw new Error(`initiate failed: ${res.status} ${await res.text()}`);
+    const data = await res.json();
+    log(`Session ${data.sessionId} — ${data.totalParts} parts of ${fmtMB(data.chunkSize)} each. Status: ${data.status}.`);
+    return data;
+}
+
+async function fetchStatus(sessionId) {
+    const res = await fetch(`${API}/${sessionId}`);
+    if (!res.ok) throw new Error(`status failed: ${res.status} ${await res.text()}`);
+    return res.json();
+}
+
+async function presignParts(sessionId, partNumbers) {
+    const res = await fetch(`${API}/${sessionId}/parts/presign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ partNumbers })
+    });
+    if (!res.ok) throw new Error(`presign failed: ${res.status} ${await res.text()}`);
+    return res.json(); // [{partNumber, url, expiresAt}]
+}
+
+function uploadChunkXhr(url, chunkBlob, partNumber) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url);
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                inFlightBytes[partNumber] = e.loaded;
+                updateProgress();
+            }
+        };
+        xhr.onload = () => {
+            delete inFlightBytes[partNumber];
+            if (xhr.status >= 200 && xhr.status < 300) {
+                resolve();
+            } else {
+                reject(new Error(`part ${partNumber} PUT failed with status ${xhr.status}`));
+            }
+        };
+        xhr.onerror = () => {
+            delete inFlightBytes[partNumber];
+            reject(new Error(`part ${partNumber} network error`));
+        };
+        xhr.send(chunkBlob);
+    });
+}
+
+async function uploadPartWithRetry(sessionId, partNumber) {
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        if (cancelled) return;
+        while (paused) await sleep(500);
+
+        try {
+            const [{ url }] = await presignParts(sessionId, [partNumber]);
+            const start = (partNumber - 1) * session.chunkSize;
+            const end = Math.min(start + session.chunkSize, file.size);
+            const chunk = file.slice(start, end);
+
+            await uploadChunkXhr(url, chunk, partNumber);
+            uploadedParts.add(partNumber);
+            updateProgress();
+            log(`Part ${partNumber}/${session.totalParts} uploaded.`);
+            return;
+        } catch (err) {
+            log(`Part ${partNumber} attempt ${attempt} failed: ${err.message}`);
+            if (attempt === MAX_RETRIES) throw err;
+            await sleep(1000 * attempt); // simple backoff
+        }
+    }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function runUploadQueue(sessionId) {
+    const pending = [];
+    for (let p = 1; p <= session.totalParts; p++) {
+        if (!uploadedParts.has(p)) pending.push(p);
+    }
+    if (pending.length === 0) {
+        log('All parts already uploaded.');
+        return;
+    }
+
+    let index = 0;
+    async function worker() {
+        while (index < pending.length) {
+            if (cancelled) return;
+            const partNumber = pending[index++];
+            await uploadPartWithRetry(sessionId, partNumber);
+        }
+    }
+
+    const workers = Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker);
+    await Promise.all(workers);
+}
+
+async function completeUpload(sessionId) {
+    try {
+        const res = await fetch(`${API}/${sessionId}/complete`, { method: 'POST' });
+        if (res.status === 404) {
+            log('Note: /complete endpoint is not implemented on the backend yet — all parts are uploaded, but the multipart upload has not been finalized in MinIO.');
+            return;
+        }
+        if (!res.ok) {
+            log(`complete failed: ${res.status} ${await res.text()}`);
+            return;
+        }
+        const data = await res.json();
+        log(`Upload completed. Object key: ${data.objectKey}`);
+    } catch (err) {
+        log(`complete request errored: ${err.message}`);
+    }
+}
+
+async function refreshStatusAndContinue() {
+    if (!session) return;
+    const status = await fetchStatus(session.sessionId);
+    uploadedParts = new Set(status.uploadedParts);
+    updateProgress();
+    await runUploadQueue(session.sessionId);
+    if (!cancelled && uploadedParts.size === session.totalParts) {
+        await completeUpload(session.sessionId);
+    }
+}
+
+startBtn.addEventListener('click', async () => {
+    if (!fileInput.files.length) {
+        log('Pick a file first.');
+        return;
+    }
+    file = fileInput.files[0];
+    cancelled = false;
+    paused = false;
+    startBtn.disabled = true;
+    pauseBtn.disabled = false;
+    cancelBtn.disabled = false;
+
+    try {
+        const initResponse = await initiateUpload();
+        session = {
+            sessionId: initResponse.sessionId,
+            chunkSize: initResponse.chunkSize,
+            totalParts: initResponse.totalParts
+        };
+        uploadedParts = new Set(initResponse.uploadedParts || []);
+        updateProgress();
+
+        await runUploadQueue(session.sessionId);
+
+        if (!cancelled && uploadedParts.size === session.totalParts) {
+            await completeUpload(session.sessionId);
+        }
+    } catch (err) {
+        log(`Error: ${err.message}`);
+    } finally {
+        startBtn.disabled = false;
+    }
+});
+
+pauseBtn.addEventListener('click', () => {
+    paused = !paused;
+    pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+    log(paused ? 'Paused by user.' : 'Resumed by user.');
+});
+
+cancelBtn.addEventListener('click', () => {
+    cancelled = true;
+    paused = false;
+    pauseBtn.disabled = true;
+    cancelBtn.disabled = true;
+    log('Cancelled by user (session left as-is on the server; abort endpoint not implemented yet).');
+});
+</script>
+</body>
+</html>

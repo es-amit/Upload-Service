@@ -1,10 +1,12 @@
 package com.lcwd.uploadservice.service.impl;
 
+import com.lcwd.uploadservice.dto.StoredObject;
 import com.lcwd.uploadservice.entity.PartSummary;
 import com.lcwd.uploadservice.service.StorageService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.*;
@@ -135,5 +137,26 @@ public class StorageServiceImpl implements StorageService {
                 request,
                 RequestBody.fromFile(file)
         );
+    }
+
+    @Override
+    public void deleteObject(String objectKey) {
+        s3Client.deleteObject(DeleteObjectRequest.builder()
+                        .bucket(bucketName)
+                        .key(objectKey)
+                        .build()
+        );
+    }
+
+    @Override
+    public StoredObject getObject(String objectKey) {
+        GetObjectRequest request = GetObjectRequest.builder()
+                .bucket(bucketName)
+                .key(objectKey)
+                .build();
+
+        ResponseInputStream<GetObjectResponse> inputStream = s3Client.getObject(request);
+        return new StoredObject(inputStream, inputStream.response().contentLength(), inputStream.response().contentType());
+
     }
 }

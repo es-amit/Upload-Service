@@ -2,11 +2,14 @@ package com.lcwd.uploadservice.controller;
 
 import com.lcwd.uploadservice.dto.*;
 import com.lcwd.uploadservice.service.UploadService;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 import java.util.UUID;
 
@@ -54,4 +57,15 @@ public class UploadController {
         return ResponseEntity.noContent().build();
     }
 
+    @GetMapping("/{sessionId}/hls/{*subPath}")
+    public void streamHls(@PathVariable UUID sessionId, @PathVariable String subPath, HttpServletResponse response) throws IOException {
+        String relativePath = subPath.startsWith("/") ? subPath.substring(1) : subPath;
+        StoredObject file = uploadService.getHlsFile(sessionId, relativePath);
+        response.setContentLengthLong(file.contentLength());
+        response.setContentType(file.contentType());
+        try (InputStream in  = file.content()) {
+            in.transferTo(response.getOutputStream());
+        }
+    }
 }
+

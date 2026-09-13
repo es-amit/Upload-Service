@@ -29,4 +29,6 @@ public interface UploadService {
 
     // Used by the scheduled cleanup job — finds sessions stale beyond the configured window and aborts each
     void cleanupStaleUploads();
+
+    StoredObject getHlsFile(UUID sessionId, String relativePath);
 }

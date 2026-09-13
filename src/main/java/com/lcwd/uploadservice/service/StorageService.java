@@ -1,5 +1,6 @@
 package com.lcwd.uploadservice.service;
 
+import com.lcwd.uploadservice.dto.StoredObject;
 import com.lcwd.uploadservice.entity.PartSummary;
 
 import java.net.URL;
@@ -29,4 +30,10 @@ public interface StorageService {
     URL presignDownload(String objectKey, Duration expiry);
 
     void uploadFile(String objectKey, Path file, String contentType);
+
+    // Deletes an object from storage — used to remove the original upload once its HLS
+    // renditions are ready and it's no longer needed for playback.
+    void deleteObject(String objectKey);
+
+    StoredObject getObject(String objectKey);
 }

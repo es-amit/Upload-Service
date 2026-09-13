@@ -98,6 +98,12 @@ public class TranscodeServiceImpl implements TranscodeService {
             session.setUpdatedAt(Instant.now());
             repository.save(session);
             log.info("Transcode succeeded for session {}", sessionId);
+
+            try {
+                storageService.deleteObject(session.getObjectKey());
+            } catch (Exception e) {
+                log.warn("Failed to delete original upload for session {}: {}", sessionId, e.getMessage());
+            }
         } catch (Exception e) {
             log.error("Transcode failed for session {}", sessionId, e);
             session.setStatus(UploadStatus.FAILED);

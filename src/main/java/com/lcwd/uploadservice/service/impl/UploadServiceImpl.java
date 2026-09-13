@@ -117,6 +117,12 @@ public class UploadServiceImpl implements UploadService {
                 bytesUploaded = session.getFileSize();
             }
 
+            // Only a READY session actually has HLS output to serve — the UI can point a
+            // player (hls.js, <video>) straight at this without knowing the /hls/** convention.
+            String streamUrl = session.getStatus() == UploadStatus.READY
+                    ? "/api/uploads/" + session.getId() + "/hls/master.m3u8"
+                    : null;
+
             return new UploadStatusResponse(
                     session.getId(),
                     session.getFileName(),
@@ -127,7 +133,8 @@ public class UploadServiceImpl implements UploadService {
                     uploadedParts,
                     bytesUploaded,
                     session.getHlsMasterKey(),
-                    session.getTranscodeError()
+                    session.getTranscodeError(),
+                    streamUrl
             );
         }
 
@@ -248,8 +255,26 @@ public class UploadServiceImpl implements UploadService {
         }
     }
 
+    @Override
+    public StoredObject getHlsFile(UUID sessionId, String relativePath) {
+        UploadSession session = repository
+                .findById(sessionId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Session with id " + sessionId + " doesn't exist")
+                );
+        if (session.getStatus() != UploadStatus.READY) {
+            throw new IllegalStateException("Cannot get the Url " + session.getStatus());
+        }
+
+        String objectKey = sessionId.toString() +  "/" + relativePath;
+        return storageService.getObject(objectKey);
+
+    }
+
     private int calculateTotalParts(long fileSize) {
         // returns Ceil value
         return Math.toIntExact((fileSize + chunkSize - 1) / chunkSize);
     }
+
+
 }

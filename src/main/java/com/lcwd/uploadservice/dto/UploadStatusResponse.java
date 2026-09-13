@@ -15,6 +15,7 @@ public record UploadStatusResponse(
         List<Integer> uploadedParts,
         long bytesUploaded,
         String hlsMasterKey,
-        String transcodeError
+        String transcodeError,
+        String streamUrl
 ) {
 }

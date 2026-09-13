@@ -53,4 +53,10 @@ public class UploadSession {
 
     @Column(name = "updated_at")
     private Instant updatedAt;
+
+    @Column(name = "hls_master_key", length = 500)
+    private String hlsMasterKey;
+
+    @Column(name = "transcode_error", length = 1000)
+    private String transcodeError;
 }

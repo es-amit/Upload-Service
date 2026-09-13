@@ -5,4 +5,9 @@ public enum UploadStatus {
     UPLOADING,
     COMPLETED,
     ABORTED,
+
+    // For Video Processing
+    PROCESSING,
+    READY,
+    FAILED,
 }

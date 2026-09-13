@@ -71,6 +71,16 @@
             <version>4.1.1</version>
             <scope>compile</scope>
         </dependency>
+<!--    Migration related Dependencies    .-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+        </dependency>
     </dependencies>
 
     <build>

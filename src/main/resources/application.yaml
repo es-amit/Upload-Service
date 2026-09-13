@@ -11,8 +11,12 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     show-sql: true
+
+  flyway:
+    baseline-on-migrate: true
+    baseline-version: 1
 
 
 # Object Storage Configuration
@@ -22,6 +26,14 @@ minio:
   secret-key: password
   bucket: videos
   chunk-size: 10485760 # 10 MB
+
+
+# HLS Transcoding Configuration
+transcode:
+  ffmpeg-path: C:/Users/yogen/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-9.0.1-full_build/bin/ffmpeg.exe
+  ffprobe-path: C:/Users/yogen/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-9.0.1-full_build/bin/ffprobe.exe
+  work-dir: ${java.io.tmpdir}
+  timeout-minutes: 120
 
 
 server:

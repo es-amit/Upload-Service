@@ -13,6 +13,8 @@ public record UploadStatusResponse(
         int totalParts,
         UploadStatus status,
         List<Integer> uploadedParts,
-        long bytesUploaded
+        long bytesUploaded,
+        String hlsMasterKey,
+        String transcodeError
 ) {
 }

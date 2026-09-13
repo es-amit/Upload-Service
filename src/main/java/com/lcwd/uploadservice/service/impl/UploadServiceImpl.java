@@ -7,6 +7,7 @@ import com.lcwd.uploadservice.entity.UploadStatus;
 import com.lcwd.uploadservice.exceptions.ResourceNotFoundException;
 import com.lcwd.uploadservice.repository.UploadSessionRepository;
 import com.lcwd.uploadservice.service.StorageService;
+import com.lcwd.uploadservice.service.TranscodeService;
 import com.lcwd.uploadservice.service.UploadService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.stream.IntStream;
 
 @Slf4j
 @Service
@@ -34,6 +36,7 @@ public class UploadServiceImpl implements UploadService {
 
     private final UploadSessionRepository repository;
     private final StorageService storageService;
+    private final TranscodeService transcodeService;
 
     @Override
     public InitiateUploadResponse initiateUpload(InitiateUploadRequest request) {
@@ -96,12 +99,24 @@ public class UploadServiceImpl implements UploadService {
         Optional<UploadSession> existing = repository.findById(sessionId);
         if(existing.isPresent()){
             UploadSession session = existing.get();
-            List<Integer> uploadedParts = storageService
-                    .listParts(session.getObjectKey(), session.getS3UploadId())
-                    .stream()
-                    .map(PartSummary::partNumber)
-                    .toList();
-            long bytesUploaded = Math.min(uploadedParts.size() * session.getChunkSize(), session.getFileSize());
+
+            // Once the multipart upload is completed or aborted, its S3 uploadId no longer
+            // exists, so listParts would throw. Only ask S3 while the upload is still in
+            // progress; otherwise every part is already accounted for.
+            List<Integer> uploadedParts;
+            long bytesUploaded;
+            if (session.getStatus() == UploadStatus.INITIATED || session.getStatus() == UploadStatus.UPLOADING) {
+                uploadedParts = storageService
+                        .listParts(session.getObjectKey(), session.getS3UploadId())
+                        .stream()
+                        .map(PartSummary::partNumber)
+                        .toList();
+                bytesUploaded = Math.min(uploadedParts.size() * session.getChunkSize(), session.getFileSize());
+            } else {
+                uploadedParts = IntStream.rangeClosed(1, session.getTotalParts()).boxed().toList();
+                bytesUploaded = session.getFileSize();
+            }
+
             return new UploadStatusResponse(
                     session.getId(),
                     session.getFileName(),
@@ -110,7 +125,9 @@ public class UploadServiceImpl implements UploadService {
                     session.getTotalParts(),
                     session.getStatus(),
                     uploadedParts,
-                    bytesUploaded
+                    bytesUploaded,
+                    session.getHlsMasterKey(),
+                    session.getTranscodeError()
             );
         }
 
@@ -122,7 +139,7 @@ public class UploadServiceImpl implements UploadService {
         UploadSession session = repository.findById(sessionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Session with id " + sessionId + " doesn't exist"));
 
-        if (session.getStatus() == UploadStatus.COMPLETED || session.getStatus() == UploadStatus.ABORTED) {
+        if (session.getStatus() != UploadStatus.INITIATED && session.getStatus() != UploadStatus.UPLOADING) {
             throw new IllegalStateException("Cannot presign parts for a session in status " + session.getStatus());
         }
 
@@ -161,11 +178,8 @@ public class UploadServiceImpl implements UploadService {
                         new ResourceNotFoundException("Session with id " + sessionId + " doesn't exist")
                 );
 
-        if (session.getStatus() == UploadStatus.COMPLETED) {
-            throw new IllegalStateException("Already Uploaded File " + session.getStatus());
-        }
-        if(session.getStatus() == UploadStatus.ABORTED){
-            throw new IllegalStateException("File Aborted " + session.getStatus());
+        if (session.getStatus() != UploadStatus.INITIATED && session.getStatus() != UploadStatus.UPLOADING) {
+            throw new IllegalStateException("Cannot complete a session in status " + session.getStatus());
         }
 
         // Check if all the parts are uploaded or not
@@ -175,12 +189,16 @@ public class UploadServiceImpl implements UploadService {
         }
 
         storageService.completeMultipartUpload(session.getObjectKey(), session.getS3UploadId(), uploadedParts);
-        // Save the session
+        // Save the session — PROCESSING, not COMPLETED: the multipart join is done, but the
+        // file still needs to be transcoded into HLS before it's actually usable.
         session.setUpdatedAt(Instant.now());
-        session.setStatus(UploadStatus.COMPLETED);
+        session.setStatus(UploadStatus.PROCESSING);
         repository.save(session);
 
-        return new CompleteUploadResponse(sessionId, session.getObjectKey(), UploadStatus.COMPLETED);
+        // Kick off the transcode asynchronously; the client polls getStatus() for READY/FAILED.
+        transcodeService.transcode(sessionId);
+
+        return new CompleteUploadResponse(sessionId, session.getObjectKey(), UploadStatus.PROCESSING);
     }
 
     @Override
@@ -190,12 +208,8 @@ public class UploadServiceImpl implements UploadService {
                 .orElseThrow(() ->
                         new ResourceNotFoundException("Session with id " + sessionId + " doesn't exist")
                 );
-        if (session.getStatus() == UploadStatus.COMPLETED) {
-            throw new IllegalStateException("Already Uploaded File " + session.getStatus());
-        }
-
-        if(session.getStatus() == UploadStatus.ABORTED){
-            throw new IllegalStateException("File Aborted Already " + session.getStatus());
+        if (session.getStatus() != UploadStatus.INITIATED && session.getStatus() != UploadStatus.UPLOADING) {
+            throw new IllegalStateException("Cannot abort a session in status " + session.getStatus());
         }
 
         storageService.abortMultipartUpload(session.getObjectKey(), session.getS3UploadId());
@@ -208,8 +222,8 @@ public class UploadServiceImpl implements UploadService {
     }
 
     @Override
-//    @Scheduled(cron = "0 0 */6 * * *")
-    @Scheduled(cron = "0 * * * * *")
+    @Scheduled(cron = "0 0 */6 * * *")
+//    @Scheduled(cron = "0 * * * * *")
     public void cleanupStaleUploads() {
         // Only INITIATED/UPLOADING sessions can go stale — COMPLETED/ABORTED are already terminal.
         List<UploadStatus> statuses = List.of(UploadStatus.INITIATED, UploadStatus.UPLOADING);

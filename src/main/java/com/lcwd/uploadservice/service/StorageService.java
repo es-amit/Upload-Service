@@ -3,6 +3,7 @@ package com.lcwd.uploadservice.service;
 import com.lcwd.uploadservice.entity.PartSummary;
 
 import java.net.URL;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 
@@ -22,4 +23,10 @@ public interface StorageService {
 
     // Cancels and releases storage for an in-progress multipart upload
     void abortMultipartUpload(String objectKey, String s3UploadId);
+
+    /// FFMPEG Helpers
+    // Download the uploaded video
+    URL presignDownload(String objectKey, Duration expiry);
+
+    void uploadFile(String objectKey, Path file, String contentType);
 }
